@@ -54,6 +54,5 @@ func TestEurekaServiceRegistry_Register(t *testing.T) {
 
 	time.Sleep(time.Second * 5)
 	(sr.(commons.Service)).Shutdown()
-
 	assert.Nil(t, err)
 }
