@@ -4,8 +4,6 @@ import "github.com/ihaiker/tenured-go-server/commons/registry"
 
 type EurekaServiceAttrs struct {
 	//检查类型
-	CheckType string `json:"type" yaml:"type"` //http,tcp
-
 	Health string `json:"health" yaml:"health"` //http url
 
 	//检查频率，
@@ -24,10 +22,9 @@ func (this *EurekaServiceAttrs) Config(attrs map[string]string) {
 
 func newInstance() *EurekaServiceAttrs {
 	return &EurekaServiceAttrs{
-		CheckType:      "http",
 		Health:         "/health",
-		Interval:       "10s",
-		Deregister:     "120m",
-		RequestTimeout: "3s",
+		Interval:       "10",
+		Deregister:     "90",
+		RequestTimeout: "3",
 	}
 }

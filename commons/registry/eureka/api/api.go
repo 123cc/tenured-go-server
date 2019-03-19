@@ -1,4 +1,4 @@
-package eureka
+package api
 
 import (
 	"bytes"
@@ -22,19 +22,18 @@ const (
 	UNKNOWN        = "UNKNOWN"
 )
 
-type Agent struct {
-	client *Client
-	// cache the node name
-	nodeName string
+type Client struct {
+	config Config
 }
 
-func (client *Client) Agent() *Agent {
-	return &Agent{client: client}
+type Config struct {
+	// Address is the address of the eureka server
+	Address string
 }
 
 //Register new application instance
-func (this *Agent) Registry(eu *EurekaInstance) error {
-	httpAction := toHttpAction("POST", this.client.config, eu.App, "", "", false)
+func (this *Client) Registry(eu *EurekaInstance) error {
+	httpAction := toHttpAction("POST", this.config.Address, eu.App, "", "", false)
 	httpAction.Body = toRegistry(eu)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
@@ -50,8 +49,8 @@ func (this *Agent) Registry(eu *EurekaInstance) error {
 }
 
 //De-register application instance
-func (this *Agent) Deregister(appName string, instanceId string) error {
-	httpAction := toHttpAction("DELETE", this.client.config, appName, getLocalIP(), "", false)
+func (this *Client) Deregister(appName string, instanceId string) error {
+	httpAction := toHttpAction("DELETE", this.config.Address, appName, instanceId, "", false)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return err
@@ -67,8 +66,8 @@ func (this *Agent) Deregister(appName string, instanceId string) error {
 }
 
 //Send application instance heartbeat
-func (this *Agent) Heartbeat(appName string, instanceId string) error {
-	httpAction := toHttpAction("PUT", this.client.config, appName, getLocalIP(), "", false)
+func (this *Client) Heartbeat(appName string, instanceId string) error {
+	httpAction := toHttpAction("PUT", this.config.Address, appName, instanceId, "", false)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return err
@@ -84,9 +83,9 @@ func (this *Agent) Heartbeat(appName string, instanceId string) error {
 }
 
 //Query for all instances
-func (this *Agent) QueryInstancesAll() ([]EurekaApplication, error) {
+func (this *Client) QueryInstancesAll() ([]EurekaApplication, error) {
 	var m EurekaApplicationsRootResponse
-	httpAction := toHttpAction("GET", this.client.config, "", "", "", true)
+	httpAction := toHttpAction("GET", this.config.Address, "", "", "", true)
 	bytes, err := executeQuery(httpAction)
 	if err != nil {
 		return nil, err
@@ -100,9 +99,9 @@ func (this *Agent) QueryInstancesAll() ([]EurekaApplication, error) {
 }
 
 //Query for all appID instances
-func (this *Agent) QueryInstancesToAppId(appName string) ([]RegistryInfo, error) {
+func (this *Client) QueryInstancesToAppId(appName string) ([]RegistryInfo, error) {
 	var m EurekaServiceResponse
-	httpAction := toHttpAction("GET", this.client.config, appName, "", "", true)
+	httpAction := toHttpAction("GET", this.config.Address, appName, "", "", true)
 	bytes, err := executeQuery(httpAction)
 	if err != nil {
 		return nil, err
@@ -116,8 +115,8 @@ func (this *Agent) QueryInstancesToAppId(appName string) ([]RegistryInfo, error)
 }
 
 //Query for a specific appID/instanceID
-func (this *Agent) QueryInstancesToAppIdAndInstanceId(appName string, instanceId string) (string, error) {
-	httpAction := toHttpAction("GET", this.client.config, appName, getLocalIP(), "", true)
+func (this *Client) QueryInstancesToAppIdAndInstanceId(appName string, instanceId string) (string, error) {
+	httpAction := toHttpAction("GET", this.config.Address, appName, instanceId, "", true)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return "", err
@@ -132,8 +131,8 @@ func (this *Agent) QueryInstancesToAppIdAndInstanceId(appName string, instanceId
 }
 
 //Query for a specific instanceID
-func (this *Agent) QueryInstancesToInstanceId(instanceId string) (string, error) {
-	httpAction := toHttpAction("GET", this.client.config, "", getLocalIP(), "", true)
+func (this *Client) QueryInstancesToInstanceId(instanceId string) (string, error) {
+	httpAction := toHttpAction("GET", this.config.Address, "", instanceId, "", true)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return "", err
@@ -148,8 +147,8 @@ func (this *Agent) QueryInstancesToInstanceId(instanceId string) (string, error)
 }
 
 //Take instance out of service
-func (this *Agent) OutOfInstances(appName string, instanceId string) error {
-	httpAction := toHttpAction("PUT", this.client.config, appName, getLocalIP(), "status?value=OUT_OF_SERVICE", false)
+func (this *Client) OutOfInstances(appName string, instanceId string) error {
+	httpAction := toHttpAction("PUT", this.config.Address, appName, instanceId, "status?value=OUT_OF_SERVICE", false)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return err
@@ -165,8 +164,8 @@ func (this *Agent) OutOfInstances(appName string, instanceId string) error {
 }
 
 //Move instance back into service (remove override)
-func (this *Agent) RefreshInstances(appName string, instanceId string) error {
-	httpAction := toHttpAction("DELETE", this.client.config, appName, getLocalIP(), "status?value=UP", false)
+func (this *Client) RefreshInstances(appName string, instanceId string) error {
+	httpAction := toHttpAction("DELETE", this.config.Address, appName, instanceId, "status?value=UP", false)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return err
@@ -182,8 +181,8 @@ func (this *Agent) RefreshInstances(appName string, instanceId string) error {
 }
 
 //Update metadata
-func (this *Agent) UpdateMetadata(appName string, instanceId string) error {
-	httpAction := toHttpAction("PUT", this.client.config, appName, getLocalIP(), "metadata?key=value", false)
+func (this *Client) UpdateMetadata(appName string, instanceId string) error {
+	httpAction := toHttpAction("PUT", this.config.Address, appName, instanceId, "metadata?key=value", false)
 	_, resp, err := doHttpRequest(httpAction)
 	if err != nil {
 		return err
@@ -239,9 +238,6 @@ func buildHttpRequest(httpAction HttpAction) *http.Request {
 	if httpAction.Body != "" {
 		reader := strings.NewReader(httpAction.Body)
 		req, err = http.NewRequest(httpAction.Method, httpAction.Url, reader)
-	} else if httpAction.Template != "" {
-		reader := strings.NewReader(httpAction.Template)
-		req, err = http.NewRequest(httpAction.Method, httpAction.Url, reader)
 	} else {
 		req, err = http.NewRequest(httpAction.Method, httpAction.Url, nil)
 	}
@@ -268,13 +264,13 @@ func toRegistry(eu *EurekaInstance) string {
 	return string(jsonBytes)
 }
 
-func toHttpAction(method string, config Config, appName string, instanceId string, param string, isJson bool) HttpAction {
+func toHttpAction(method string, ipAddr string, appName string, instanceId string, param string, isJson bool) HttpAction {
 	httpAction := HttpAction{
 		Method:      method,
 		ContentType: "application/json;charset=UTF-8",
 	}
 	var buffer bytes.Buffer
-	buffer.WriteString(fmt.Sprintf("%s://%s/eureka/apps", config.Scheme, config.Address))
+	buffer.WriteString(fmt.Sprintf("http://%s/eureka/apps", ipAddr))
 	if appName != "" {
 		buffer.WriteString("/" + appName)
 	}
@@ -289,6 +285,15 @@ func toHttpAction(method string, config Config, appName string, instanceId strin
 	}
 	httpAction.Url = buffer.String()
 	return httpAction
+}
+
+func NewClient(ipAddr string) *Client {
+	client := &Client{
+		config: Config{
+			Address: ipAddr,
+		},
+	}
+	return client
 }
 
 //创建请求实体

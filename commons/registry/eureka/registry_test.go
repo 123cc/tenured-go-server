@@ -1,10 +1,11 @@
 package eureka
 
 import (
-	"github.com/ihaiker/tenured-go-server/commons"
+	"fmt"
 	"github.com/ihaiker/tenured-go-server/commons/registry"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/tenured-go-server/commons"
 	"testing"
 	"time"
 )
@@ -30,20 +31,24 @@ func TestEurekaServiceRegistry_Register(t *testing.T) {
 	si, sr, err := registry.GetRegistry(config)
 	assert.Nil(t, err)
 
-	err = sr.Subscribe("test", &NLister{})
+	err = sr.Subscribe("testApp", &NLister{})
 	t.Log(err)
 
 	si.Id = "b102c658-830a-4d63-ba08-6a1ab75823d8"
 	si.Name = "testApp"
 	si.Address = "127.0.0.1:8761"
-	si.Metadata = map[string]string{"instanceId": "user:password"}
+	si.Metadata = map[string]string{"instanceId": si.Id}
 	//修改配置，存活检测周期
 	si.PluginAttrs.Config(map[string]string{"interval": "1s"})
 
 	err = sr.Register(*si)
 	assert.Nil(t, err)
 
+	time.Sleep(time.Second * 5)
 	ss, err := sr.Lookup("testApp", nil)
+	if err == nil {
+		fmt.Println(ss)
+	}
 	assert.Nil(t, err)
 	for _, s := range ss {
 		t.Log(s)
@@ -53,6 +58,6 @@ func TestEurekaServiceRegistry_Register(t *testing.T) {
 	err = sr.Unregister(si.Name)
 
 	time.Sleep(time.Second * 5)
-	(sr.(commons.Service)).Shutdown()
+	(sr.(commons.Service)).Shutdown(true)
 	assert.Nil(t, err)
 }

@@ -1,9 +1,11 @@
 package eureka
 
 import (
+	"fmt"
 	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/ihaiker/tenured-go-server/commons/registry"
 	"github.com/sirupsen/logrus"
+	"github.com/tenured-go-server/commons/registry/eureka/api"
 	"net"
 	"strconv"
 )
@@ -21,9 +23,8 @@ func (subscribeInfo *subscribeInfo) close() {
 }
 
 type EurekaServiceRegistry struct {
-	client *Client
-	config *EurekaConfig
-
+	client     *api.Client
+	config     *EurekaConfig
 	subscribes map[string]*subscribeInfo
 }
 
@@ -31,7 +32,7 @@ func (this *EurekaServiceRegistry) Start() error {
 	return nil
 }
 
-func (this *EurekaServiceRegistry) Shutdown() {
+func (this *EurekaServiceRegistry) Shutdown(interrupt bool) {
 	for name, ch := range this.subscribes {
 		ch.close()
 		delete(this.subscribes, name)
@@ -41,43 +42,50 @@ func (this *EurekaServiceRegistry) Shutdown() {
 //注册中心注册服务
 func (this *EurekaServiceRegistry) Register(serverInstance registry.ServerInstance) error {
 	logrus.Infof("register %s(%s) : %s", serverInstance.Name, serverInstance.Address, serverInstance.Id)
-	if _, portStr, err := net.SplitHostPort(serverInstance.Address); err != nil {
+	attrs := serverInstance.PluginAttrs.(*EurekaServiceAttrs)
+	if host, portStr, err := net.SplitHostPort(serverInstance.Address); err != nil {
 		return err
 	} else if port, err := strconv.Atoi(portStr); err != nil {
 		return err
 	} else {
-		reg := NewInstanceInfo("169.254.67.217", port, serverInstance)
-		return this.client.Agent().Registry(reg)
+		timeOut, terr := strconv.Atoi(attrs.RequestTimeout)
+		renewal, rerr := strconv.Atoi(attrs.Interval)
+		eviction, err := strconv.Atoi(attrs.Deregister)
+		if err != nil {
+			return err
+		}
+		if rerr != nil {
+			return rerr
+		}
+		if terr != nil {
+			return terr
+		}
+		leaseInfo := &api.LeaseInfo{
+			EvictionDurationInSecs: uint(timeOut),
+			RenewalIntervalInSecs:  renewal,
+			DurationInSecs:         eviction,
+		}
+		reg := api.NewInstanceInfo(host, port, serverInstance)
+		reg.LeaseInfo = leaseInfo
+		return this.client.Registry(reg)
 	}
 	return nil
-}
-
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, address := range addrs {
-		// check the address type and if it is not a loopback the display it
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
-	panic("Unable to determine local IP address (non loopback). Exiting.")
 }
 
 //从注册中心删除注册
 func (this *EurekaServiceRegistry) Unregister(appName string) error {
 	logrus.Info("Unregister ", appName)
-	return this.client.Agent().Deregister(appName, appName)
+	services, err := this.client.QueryInstancesToAppId(appName)
+	if err != nil {
+		return err
+	}
+	return this.client.Deregister(appName, services[0].InstanceId)
 }
 
 //订阅服务改变
 func (this *EurekaServiceRegistry) Subscribe(serverName string, listener registry.RegistryNotifyListener) error {
 	if this.addSubscribe(serverName, listener) {
-		go this.loadSubscribeHealth(serverName)
+		//go this.loadSubscribeHealth(serverName)
 	}
 	return nil
 }
@@ -102,7 +110,7 @@ func (this *EurekaServiceRegistry) removeSubscribe(name string, listener registr
 
 //发现服务内容
 func (this *EurekaServiceRegistry) Lookup(serverName string, tags []string) ([]registry.ServerInstance, error) {
-	if services, err := this.client.Agent().QueryInstancesToAppId(serverName); err != nil {
+	if services, err := this.client.QueryInstancesToAppId(serverName); err != nil {
 		return nil, err
 	} else {
 		serverInstances := make([]registry.ServerInstance, len(services))
@@ -113,11 +121,19 @@ func (this *EurekaServiceRegistry) Lookup(serverName string, tags []string) ([]r
 	}
 }
 
-func (this *EurekaServiceRegistry) convertService(serverName string, service RegistryInfo) registry.ServerInstance {
+func (this *EurekaServiceRegistry) convertService(serverName string, service api.RegistryInfo) registry.ServerInstance {
+	var status = service.Status
+	if status == api.UP {
+		status = "OK"
+	}
+	tags := []string{service.VipAddress}
 	return registry.ServerInstance{
-		Name:    serverName,
-		Address: service.HostName,
-		Status:  "OK",
+		Id:       service.InstanceId,
+		Name:     serverName,
+		Metadata: service.Metadata,
+		Address:  fmt.Sprintf("%s:%d", service.IpAddr, service.Port.Port),
+		Tags:     tags,
+		Status:   status,
 	}
 }
 
@@ -140,6 +156,73 @@ func (this *EurekaServiceRegistry) getOrCreateSubscribe(name string) *subscribeI
 }
 
 func (this *EurekaServiceRegistry) loadSubscribeHealth(serverName string) {
+	defer func() {
+		if e := recover(); e != nil {
+			logrus.Warnf("close subscribe(%s) error: %v", serverName, e)
+		}
+	}()
+	logrus.Debug("start loop load subscribe server health:", serverName)
+
+	register := make([]registry.ServerInstance, 0)
+	deregister := make([]registry.ServerInstance, 0)
+
+	for {
+		subInfo, has := this.subscribes[serverName]
+		if !has {
+			return
+		}
+		select {
+		case <-subInfo.closeChan:
+			return
+		default:
+			services, err := this.client.QueryInstancesToAppId(serverName)
+			if err != nil {
+				continue
+			}
+
+			subInfo, has = this.subscribes[serverName]
+			if !has {
+				return
+			}
+
+			register = register[:0]
+			deregister = deregister[:0]
+			if subInfo.services == nil {
+				subInfo.services = map[string]registry.ServerInstance{}
+				for _, s := range services {
+					subInfo.services[s.InstanceId] = this.convertService(serverName, s)
+				}
+			} else {
+				currentServices := map[string]registry.ServerInstance{}
+
+				for _, s := range services {
+					current := this.convertService(serverName, s)
+					if old, has := subInfo.services[s.InstanceId]; !has || current.Status != old.Status {
+						register = append(register, current)
+					}
+					currentServices[s.InstanceId] = current
+					delete(subInfo.services, s.InstanceId)
+				}
+
+				for _, s := range subInfo.services {
+					s.Status = "deregister"
+					deregister = append(deregister, s)
+				}
+
+				for _, v := range subInfo.listeners.Values() {
+					if len(register) > 0 {
+						v.(registry.RegistryNotifyListener).
+							OnNotify(registry.REGISTER, register)
+					}
+					if len(deregister) > 0 {
+						v.(registry.RegistryNotifyListener).
+							OnNotify(registry.UNREGISTER, deregister)
+					}
+				}
+				subInfo.services = currentServices
+			}
+		}
+	}
 }
 
 func newRegistry(pluginConfig *registry.PluginConfig) (*EurekaServiceRegistry, error) {
@@ -148,15 +231,6 @@ func newRegistry(pluginConfig *registry.PluginConfig) (*EurekaServiceRegistry, e
 		config:     config,
 		subscribes: map[string]*subscribeInfo{},
 	}
-	defConfig := &Config{
-		Address: "127.0.0.1:8761",
-		Scheme:  "http",
-	}
-	defConfig.Scheme = config.Scheme()
-	defConfig.Address = config.Address()
-	client := &Client{
-		config: *defConfig,
-	}
-	serviceRegistry.client = client
+	serviceRegistry.client = api.NewClient(config.Address())
 	return serviceRegistry, nil
 }

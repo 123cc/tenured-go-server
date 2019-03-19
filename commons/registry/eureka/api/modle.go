@@ -1,7 +1,15 @@
-package eureka
+package api
 
 type Instance struct {
 	Instance *EurekaInstance `xml:"instance" json:"instance"`
+}
+
+type HttpAction struct {
+	Method      string `yaml:"method"`
+	Url         string `yaml:"url"`
+	Body        string `yaml:"body"`
+	Accept      string `yaml:"accept"`
+	ContentType string `yaml:"contentType"`
 }
 
 type EurekaInstance struct {
@@ -18,20 +26,20 @@ type EurekaInstance struct {
 	HealthCheckUrl   string          `xml:"healthCheckUrl" json:"healthCheckUrl"`
 	DataCenterInfo   *DataCenterInfo `xml:"dataCenterInfo" json:"dataCenterInfo"`
 	//optional
-	LeaseInfo *LeaseInfo `xml:"leaseInfo" json:"leaseInfo"`
+	LeaseInfo *LeaseInfo `xml:"leaseInfo,omitempty" json:"leaseInfo,omitempty"`
 	//optional app specific metadata
-	Metadata map[string]string `xml:"metadata" json:"metadata"`
+	Metadata map[string]string `xml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 type Port struct {
 	Port    int  `xml:",chardata" json:"$"`
-	Enabled bool `xml:"enabled,attr" json:"@enabled"`
+	Enabled bool `xml:"enabled,attr" json:"@enabled,omitempty"`
 }
 
 type DataCenterInfo struct {
-	Name  string `xml:"name" json:"name"`
-	Class string `xml:"class,attr" json:"@class"`
-	//Metadata *DataCenterMetadata `xml:"metadata" json:"metadata"`
+	Name     string              `xml:"name" json:"name"`
+	Class    string              `xml:"class,attr" json:"@class"`
+	Metadata *DataCenterMetadata `xml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 type DataCenterMetadata struct {
@@ -56,7 +64,13 @@ type DataCenterMetadata struct {
 
 type LeaseInfo struct {
 	//收回持续时间插入
-	EvictionDurationInSecs uint `xml:"evictionDurationInSecs" json:"evictionDurationInSecs"`
+	EvictionDurationInSecs uint `xml:"evictionDurationInSecs,omitempty" json:"evictionDurationInSecs,omitempty"`
+	RenewalIntervalInSecs  int  `xml:"renewalIntervalInSecs,omitempty" json:"renewalIntervalInSecs,omitempty"`
+	DurationInSecs         int  `xml:"durationInSecs,omitempty" json:"durationInSecs,omitempty"`
+	RegistrationTimestamp  int  `xml:"registrationTimestamp,omitempty" json:"registrationTimestamp,omitempty"`
+	LastRenewalTimestamp   int  `xml:"lastRenewalTimestamp,omitempty" json:"lastRenewalTimestamp,omitempty"`
+	EvictionTimestamp      int  `xml:"evictionTimestamp,omitempty" json:"evictionTimestamp,omitempty"`
+	ServiceUpTimestamp     int  `xml:"serviceUpTimestamp,omitempty" json:"serviceUpTimestamp,omitempty"`
 }
 
 type EurekaServiceResponse struct {
@@ -69,12 +83,26 @@ type EurekaApplication struct {
 }
 
 type RegistryInfo struct {
-	HostName string     `json:"hostName"`
-	Port     EurekaPort `json:"port"`
+	InstanceId       string            `json:"instanceId"`
+	HostName         string            `json:"hostName"`
+	App              string            `json:"app"`
+	IpAddr           string            `json:"ipAddr"`
+	Status           string            `json:"status"`
+	Overriddenstatus string            `json:"overriddenstatus"`
+	Port             *PortResult       `json:"port,omitempty"`
+	SecurePort       *PortResult       `json:"securePort"`
+	CountryId        int               `json:"countryId"`
+	DataCenterInfo   *DataCenterInfo   `json:"dataCenterInfo"`
+	LeaseInfo        *LeaseInfo        `json:"leaseInfo"`
+	Metadata         map[string]string `json:"metadata"`
+	HomePageUrl      string            `json:"homePageUrl"`
+	StatusPageUrl    string            `json:"statusPageUrl"`
+	HealthCheckUrl   string            `json:"healthCheckUrl"`
+	VipAddress       string            `json:"vipAddress"`
 }
-
-type EurekaPort struct {
-	Port int `json:"$"`
+type PortResult struct {
+	Port    int  `xml:",chardata" json:"$"`
+	Enabled bool `xml:"enabled,attr" json:"enabled"`
 }
 
 type EurekaApplicationsRootResponse struct {
