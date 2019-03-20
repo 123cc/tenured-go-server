@@ -125,17 +125,24 @@ func (this *defChannel) AsyncWrite(msg interface{}, timeout time.Duration, callb
 	_ = this.write(msg, timeout, callback)
 }
 
-func (this *defChannel) Do(onClose func(channel RemotingChannel)) {
+func (this *defChannel) Do(onClose func(channel RemotingChannel)) error {
 	this.onCloseFn = onClose
 	go this.syncDo(this.readLoop)
-	go this.syncDo(this.heartbeatLoop)
+	if this.config.IdleTime > 0 {
+		go this.syncDo(this.heartbeatLoop)
+	}
 	go this.syncDo(this.writeLoop)
-	this.handler.OnChannel(this)
+	err := this.handler.OnChannel(this)
+	if err != nil {
+		this.Close()
+	}
+	return err
 }
 
 func (this *defChannel) Close() {
 	this.closeOnce.Do(func() {
 		logrus.Infof("close channel: %s", this.RemoteAddr())
+		this.idleTimer.Stop()
 		this.handler.OnClose(this)
 		if this.onCloseFn != nil {
 			this.onCloseFn(this)
@@ -161,6 +168,7 @@ func (this *defChannel) writeLoop() {
 		this.closeUnWriteMessageChan()
 		this.Close()
 	}()
+	logrus.Debug("start write loop:", this.RemoteAddr())
 
 	for {
 		select {
@@ -180,13 +188,14 @@ func (this *defChannel) writeLoop() {
 
 func (this *defChannel) readLoop() {
 	defer this.Close()
-
+	logrus.Debug("start read loop:", this.RemoteAddr())
 	for {
 		select {
 		case <-this.closeChan:
 			return
 		default:
 			if msg, err := this.decoderMessage(this.conn); err != nil {
+				logrus.Infof("decode error close channel %s, error:%s ", this.RemoteAddr(), err)
 				return
 			} else if msg == nil {
 				//read deadline
@@ -248,11 +257,9 @@ func (this *defChannel) resetReadIdle() {
 }
 
 func (this *defChannel) heartbeatLoop() {
-	logrus.Debug("start heartbeat loop:", this.RemoteAddr())
-	defer func() {
-		this.idleTimer.Stop()
-		this.Close()
-	}()
+	logrus.Debug("start heartbeat loop: ", this.RemoteAddr())
+	defer this.Close()
+
 	idleCheckTime := this.heartbeatTimeout()
 	for {
 		select {
@@ -260,8 +267,8 @@ func (this *defChannel) heartbeatLoop() {
 			return
 		case t := <-this.idleTimer.C:
 			timestr := t.Format("2006-01-02 15:04:05")
-			logrus.Infof("send idle to: %s, time: %s", this.RemoteAddr(), timestr)
 			if this.idleTimeout+1 <= this.config.IdleTimeout {
+				logrus.Infof("SendIdle to: %s, time: %s", this.RemoteAddr(), timestr)
 				this.idleTimeout = this.idleTimeout + 1
 				this.idleTimer.Reset(idleCheckTime)
 				this.handler.OnIdle(this)

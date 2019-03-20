@@ -9,7 +9,33 @@ import (
 	"time"
 )
 
-type Remoting struct {
+type Hock int
+
+const (
+	HOCK_START_BEFORE Hock = iota
+	HOCK_START_AFTER
+
+	HOCK_SHUTDOWN_BEFORE
+	HOCK_SHUTDOWN_AFTER
+)
+
+type Remoting interface {
+	commons.Service
+
+	SetCoderFactory(coderFactory RemotingCoderFactory)
+	SetCoder(coder RemotingCoder)
+	SetHandlerFactory(handlerFactory RemotingHandlerFactory)
+	SetHandler(handler RemotingHandler)
+	RegisterHock(hock Hock, fn func())
+
+	SendTo(address string, msg interface{}, timeout time.Duration) error
+	SyncSendTo(address string, msg interface{}, timeout time.Duration, callback func(error))
+
+	IsActive() bool
+	IsStatus(status commons.ServerStatus) bool
+}
+
+type remotingImpl struct {
 	config   *RemotingConfig
 	channels map[string]RemotingChannel
 
@@ -20,30 +46,35 @@ type Remoting struct {
 	coderFactory   RemotingCoderFactory
 	handlerFactory RemotingHandlerFactory
 
+	hocks           map[Hock]func()
 	channelSelector func(address string, timeout time.Duration) (RemotingChannel, error)
 }
 
-func (this *Remoting) SetCoderFactory(coderFactory RemotingCoderFactory) {
+func (this *remotingImpl) SetCoderFactory(coderFactory RemotingCoderFactory) {
 	this.coderFactory = coderFactory
 }
 
-func (this *Remoting) SetCoder(coder RemotingCoder) {
+func (this *remotingImpl) SetCoder(coder RemotingCoder) {
 	this.SetCoderFactory(func(channel RemotingChannel, config RemotingConfig) RemotingCoder {
 		return coder
 	})
 }
 
-func (this *Remoting) SetHandlerFactory(handlerFactory RemotingHandlerFactory) {
+func (this *remotingImpl) SetHandlerFactory(handlerFactory RemotingHandlerFactory) {
 	this.handlerFactory = handlerFactory
 }
 
-func (this *Remoting) SetHandler(handler RemotingHandler) {
+func (this *remotingImpl) SetHandler(handler RemotingHandler) {
 	this.SetHandlerFactory(func(channel RemotingChannel, config RemotingConfig) RemotingHandler {
 		return handler
 	})
 }
 
-func (this *Remoting) Start() error {
+func (this *remotingImpl) RegisterHock(hock Hock, fn func()) {
+	this.hocks[hock] = fn
+}
+
+func (this *remotingImpl) Start() error {
 	if this.coderFactory == nil {
 		return &RemotingError{Op: ErrCoder, Err: errors.New("no coder")}
 	}
@@ -52,14 +83,20 @@ func (this *Remoting) Start() error {
 	}
 	this.channelSelector = this.getChannel
 
+	if hock, has := this.hocks[HOCK_START_BEFORE]; has {
+		hock()
+	}
 	if started := this.status.Start(func() {}); started {
+		if hock, has := this.hocks[HOCK_START_AFTER]; has {
+			hock()
+		}
 		return nil
 	} else {
 		return errors.New("start unknow error!")
 	}
 }
 
-func (this *Remoting) SendTo(address string, msg interface{}, timeout time.Duration) error {
+func (this *remotingImpl) SendTo(address string, msg interface{}, timeout time.Duration) error {
 	timeoutTime := time.Now().Add(timeout)
 	if channel, err := this.channelSelector(address, timeout); err != nil {
 		return err
@@ -71,7 +108,7 @@ func (this *Remoting) SendTo(address string, msg interface{}, timeout time.Durat
 	}
 }
 
-func (this *Remoting) SyncSendTo(address string, msg interface{}, timeout time.Duration, callback func(error)) {
+func (this *remotingImpl) SyncSendTo(address string, msg interface{}, timeout time.Duration, callback func(error)) {
 	timeoutTime := time.Now().Add(timeout)
 	if channel, err := this.channelSelector(address, timeout); err != nil {
 		callback(err)
@@ -84,7 +121,7 @@ func (this *Remoting) SyncSendTo(address string, msg interface{}, timeout time.D
 	}
 }
 
-func (this *Remoting) getChannel(address string, timeout time.Duration) (RemotingChannel, error) {
+func (this *remotingImpl) getChannel(address string, timeout time.Duration) (RemotingChannel, error) {
 	if channel, ok := this.channels[address]; ok {
 		return channel, nil
 	} else {
@@ -92,7 +129,7 @@ func (this *Remoting) getChannel(address string, timeout time.Duration) (Remotin
 	}
 }
 
-func (this *Remoting) newChannel(address string, conn *net.TCPConn) RemotingChannel {
+func (this *remotingImpl) newChannel(address string, conn *net.TCPConn) (RemotingChannel, error) {
 	this.waitGroup.Add(1)
 	logrus.Infof("new channel：%s", address)
 
@@ -102,19 +139,22 @@ func (this *Remoting) newChannel(address string, conn *net.TCPConn) RemotingChan
 	channel.coder = this.coderFactory(channel, *this.config)
 	channel.handler = this.handlerFactory(channel, *this.config)
 	this.channels[address] = channel
-
-	channel.Do(func(ch RemotingChannel) {
+	err := channel.Do(func(ch RemotingChannel) {
 		delete(this.channels, ch.RemoteAddr())
 		this.waitGroup.Done()
 	})
-	return channel
+	return channel, err
 }
 
-func (this *Remoting) GetStatus() commons.ServerStatus {
-	return this.status
+func (this *remotingImpl) IsActive() bool {
+	return this.status.IsUp()
 }
 
-func (this *Remoting) closeChannels() {
+func (this *remotingImpl) IsStatus(status commons.ServerStatus) bool {
+	return this.status.Is(status)
+}
+
+func (this *remotingImpl) closeChannels() {
 	for _, v := range this.channels {
 		if v != nil {
 			v.Close()
@@ -122,11 +162,17 @@ func (this *Remoting) closeChannels() {
 	}
 }
 
-func (this *Remoting) Shutdown(interrupt bool) {
+func (this *remotingImpl) Shutdown(interrupt bool) {
 	this.status.Shutdown(func() {
 		this.waitGroup.Add(1)
 		logrus.Infof("turn off remoting")
+		if hock, has := this.hocks[HOCK_SHUTDOWN_BEFORE]; has {
+			hock()
+		}
 		close(this.exitChan)
+		if hock, has := this.hocks[HOCK_SHUTDOWN_AFTER]; has {
+			hock()
+		}
 		this.closeChannels()
 		logrus.Infof("remoting has stopped.")
 		this.waitGroup.Done()
