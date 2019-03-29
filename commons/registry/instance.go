@@ -38,6 +38,9 @@ func (this ServerInstance) String() string {
 }
 
 func LoadModel(obj interface{}, m map[string]string) {
+	if m == nil || len(m) == 0 {
+		return
+	}
 	defer func() {
 		if e := recover(); e != nil {
 			logrus.Debug(e)
@@ -49,33 +52,50 @@ func LoadModel(obj interface{}, m map[string]string) {
 		val = val.Elem()
 	}
 
-	for k, v := range m {
-		if f := val.FieldByName(k); f.IsValid() {
-			if f.CanSet() {
-				switch f.Type().Kind() {
-				case reflect.Int:
-					if i, e := strconv.ParseInt(v, 0, 0); e == nil {
-						f.SetInt(i)
-					} else {
-						logrus.Debugf("Could not set int value of %s: %s\n", k, e)
-					}
-				case reflect.Float64:
-					if fl, e := strconv.ParseFloat(v, 0); e == nil {
-						f.SetFloat(fl)
-					} else {
-						logrus.Debugf("Could not set float64 value of %s: %s\n", k, e)
-					}
-				case reflect.String:
-					f.SetString(v)
+	attrs := map[string]string{}
+	for i := 0; i < val.Type().NumField(); i++ {
+		name := val.Type().Field(i).Name
+		if attr, has := val.Type().Field(i).Tag.Lookup("attr"); has {
+			name = attr
+		} else if jsonKey, has := val.Type().Field(i).Tag.Lookup("json"); has {
+			name = jsonKey
+		} else if yamlKey, has := val.Type().Field(i).Tag.Lookup("yaml"); has {
+			name = yamlKey
+		}
+		attrs[name] = val.Type().Field(i).Name
+	}
 
-				default:
-					logrus.Debugf("Unsupported format %v for field %s\n", f.Type().Kind(), k)
+	for k, v := range m {
+		if fieldName, has := attrs[k]; has {
+			if f := val.FieldByName(fieldName); f.IsValid() {
+				if f.CanSet() {
+					switch f.Type().Kind() {
+					case reflect.Int:
+						if i, e := strconv.ParseInt(v, 0, 0); e == nil {
+							f.SetInt(i)
+						}
+					case reflect.Float64:
+						if fl, e := strconv.ParseFloat(v, 0); e == nil {
+							f.SetFloat(fl)
+						}
+					case reflect.String:
+						f.SetString(v)
+					}
 				}
-			} else {
-				logrus.Debugf("Key '%s' cannot be set\n", k)
 			}
-		} else {
-			logrus.Debugf("Key '%s' does not have a corresponding field in obj %+v\n", k, obj)
 		}
 	}
+}
+
+func IsOK(instance ServerInstance) bool {
+	return instance.Status == "OK"
+}
+
+func AllNotOK(instance ...ServerInstance) bool {
+	for _, v := range instance {
+		if IsOK(v) {
+			return false
+		}
+	}
+	return true
 }

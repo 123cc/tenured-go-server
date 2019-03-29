@@ -1,14 +1,15 @@
 package store
 
 import (
-	"github.com/ihaiker/tenured-go-server/commons/runtime"
+	"github.com/ihaiker/tenured-go-server/commons/logs"
 	"github.com/ihaiker/tenured-go-server/commons/runtime/signal"
-	"github.com/kataras/iris/core/errors"
+	"github.com/ihaiker/tenured-go-server/services"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"strings"
+	"os"
 )
 
+var logger *logrus.Logger
 var storeService *storeServer
 var storeCfg *storeConfig
 
@@ -22,26 +23,27 @@ var StoreCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if config != "" {
-			storeCfg, err = initConfig(config)
+		storeCfg = NewStoreConfig()
+		if err := services.LoadServerConfig("store", config, storeCfg); err != nil {
 			return err
-		} else {
-			searchConfigs := []string{
-				runtime.GetWorkDir() + "/conf/store.yml",
-				runtime.GetWorkDir() + "/conf/store.json",
-				"/etc/tenured/conf/store.yml",
-				"/etc/tenured/conf/store.json",
-			}
-			for _, searchConfig := range searchConfigs {
-				if storeCfg, err = initConfig(searchConfig); err == nil {
-					logrus.Info("use config file: ", searchConfig)
-					return nil
-				} else {
-					logrus.Debugf("search config file %s not found!", searchConfig)
-				}
-			}
-			return errors.New("any config found ! \n\t" + strings.Join(searchConfigs, "\n\t"))
 		}
+
+		if err = os.Chdir(storeCfg.WorkDir); err != nil {
+			return err
+		}
+
+		if debug, err := cmd.Root().PersistentFlags().GetBool("debug"); err == nil && debug {
+			storeCfg.Logs.Level = "debug"
+		}
+
+		if logger, err = logs.InitLogger(
+			"store",
+			storeCfg.Logs.Output, storeCfg.Logs.Level,
+			storeCfg.Logs.Path, storeCfg.Logs.Archive,
+		); err != nil {
+			return err
+		}
+		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		storeService = newStoreServer(storeCfg)
