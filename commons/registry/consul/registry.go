@@ -2,17 +2,16 @@ package consul
 
 import (
 	"fmt"
-	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/hashicorp/consul/api"
 	"github.com/ihaiker/tenured-go-server/commons/registry"
-	"github.com/sirupsen/logrus"
 	"net"
+	"reflect"
 	"strconv"
 )
 
 type subscribeInfo struct {
-	listeners *hashset.Set
-	services  map[string]registry.ServerInstance
+	listeners map[uintptr]registry.RegistryNotifyListener
+	services  map[string]*registry.ServerInstance
 	closeChan chan struct{}
 }
 
@@ -38,8 +37,8 @@ func (this *ConsulServiceRegistry) Shutdown(interrupt bool) {
 	}
 }
 
-func (this *ConsulServiceRegistry) Register(serverInstance registry.ServerInstance) error {
-	logrus.Infof("To register %s(%s) : %s", serverInstance.Name, serverInstance.Address, serverInstance.Id)
+func (this *ConsulServiceRegistry) Register(serverInstance *registry.ServerInstance) error {
+	logger.Infof("to register %s(%s) : %s", serverInstance.Name, serverInstance.Address, serverInstance.Id)
 	attrs := serverInstance.PluginAttrs.(*ConsulServerAttrs)
 	if host, portStr, err := net.SplitHostPort(serverInstance.Address); err != nil {
 		return err
@@ -70,16 +69,16 @@ func (this *ConsulServiceRegistry) Register(serverInstance registry.ServerInstan
 }
 
 func (this *ConsulServiceRegistry) Unregister(serverId string) error {
-	logrus.Info("To Unregister ", serverId)
+	logger.Info("To Unregister ", serverId)
 	return this.client.Agent().ServiceDeregister(serverId)
 }
 
-func (this *ConsulServiceRegistry) convertService(serverName string, service *api.ServiceEntry) registry.ServerInstance {
+func (this *ConsulServiceRegistry) convertService(serverName string, service *api.ServiceEntry) *registry.ServerInstance {
 	status := service.Checks.AggregatedStatus()
 	if status == api.HealthPassing {
 		status = "OK"
 	}
-	return registry.ServerInstance{
+	return &registry.ServerInstance{
 		Id:       service.Service.ID,
 		Name:     serverName,
 		Metadata: service.Service.Meta,
@@ -92,18 +91,18 @@ func (this *ConsulServiceRegistry) convertService(serverName string, service *ap
 func (this *ConsulServiceRegistry) loadSubscribeHealth(serverName string) {
 	defer func() {
 		if e := recover(); e != nil {
-			logrus.Warnf("close subscribe(%s) error: %v", serverName, e)
+			logger.Warnf("close subscribe(%s) error: %v", serverName, e)
 		}
 	}()
-	logrus.Debug("start loop load subscribe server health:", serverName)
+	logger.Debug("start loop load subscribe server health:", serverName)
 
 	waitIndex := uint64(0)
 	healthWaitTime := this.config.HealthWaitTime()
 	failWaitTime := this.config.HealthFailWaitTime()
 	waitTime := healthWaitTime
 
-	register := make([]registry.ServerInstance, 0)
-	deregister := make([]registry.ServerInstance, 0)
+	register := make([]*registry.ServerInstance, 0)
+	deregister := make([]*registry.ServerInstance, 0)
 
 	for {
 		subInfo, has := this.subscribes[serverName]
@@ -134,12 +133,12 @@ func (this *ConsulServiceRegistry) loadSubscribeHealth(serverName string) {
 			register = register[:0]
 			deregister = deregister[:0]
 			if subInfo.services == nil {
-				subInfo.services = map[string]registry.ServerInstance{}
+				subInfo.services = map[string]*registry.ServerInstance{}
 				for _, s := range services {
 					subInfo.services[s.Service.ID] = this.convertService(serverName, s)
 				}
 			} else {
-				currentServices := map[string]registry.ServerInstance{}
+				currentServices := map[string]*registry.ServerInstance{}
 
 				for _, s := range services {
 					current := this.convertService(serverName, s)
@@ -158,14 +157,12 @@ func (this *ConsulServiceRegistry) loadSubscribeHealth(serverName string) {
 					deregister = append(deregister, s)
 				}
 
-				for _, v := range subInfo.listeners.Values() {
+				for _, v := range subInfo.listeners {
 					if len(register) > 0 {
-						v.(registry.RegistryNotifyListener).
-							OnNotify(registry.REGISTER, register)
+						v(registry.REGISTER, register)
 					}
 					if len(deregister) > 0 {
-						v.(registry.RegistryNotifyListener).
-							OnNotify(registry.UNREGISTER, deregister)
+						v(registry.UNREGISTER, deregister)
 					}
 				}
 				subInfo.services = currentServices
@@ -192,12 +189,12 @@ func (this *ConsulServiceRegistry) Unsubscribe(serverName string, listener regis
 	return nil
 }
 
-func (this *ConsulServiceRegistry) Lookup(serverName string, tags []string) ([]registry.ServerInstance, error) {
+func (this *ConsulServiceRegistry) Lookup(serverName string, tags []string) ([]*registry.ServerInstance, error) {
 	if services, _, err := this.client.Health().
 		ServiceMultipleTags(serverName, tags, false, &api.QueryOptions{}); err != nil {
 		return nil, err
 	} else {
-		serverInstances := make([]registry.ServerInstance, len(services))
+		serverInstances := make([]*registry.ServerInstance, len(services))
 		for i := 0; i < len(services); i++ {
 			serverInstances[i] = this.convertService(serverName, services[i])
 		}
@@ -208,7 +205,7 @@ func (this *ConsulServiceRegistry) Lookup(serverName string, tags []string) ([]r
 func (this *ConsulServiceRegistry) getOrCreateSubscribe(name string) *subscribeInfo {
 	if subInfo, has := this.subscribes[name]; !has {
 		subInfo = &subscribeInfo{
-			listeners: hashset.New(),
+			listeners: map[uintptr]registry.RegistryNotifyListener{},
 			services:  nil,
 			closeChan: make(chan struct{}),
 		}
@@ -220,15 +217,19 @@ func (this *ConsulServiceRegistry) getOrCreateSubscribe(name string) *subscribeI
 //@return 返回是否是此服务的第一个监听器
 func (this *ConsulServiceRegistry) addSubscribe(name string, listener registry.RegistryNotifyListener) bool {
 	sets := this.getOrCreateSubscribe(name)
-	sets.listeners.Add(listener)
-	return sets.listeners.Size() == 1
+	//fixme: hash of unhashable
+	pointer := reflect.ValueOf(listener).Pointer()
+	sets.listeners[pointer] = listener
+	return len(sets.listeners) == 1
 }
 
 //@return 是否是次服务的最后一个监听器
 func (this *ConsulServiceRegistry) removeSubscribe(name string, listener registry.RegistryNotifyListener) bool {
 	sets := this.getOrCreateSubscribe(name)
-	sets.listeners.Remove(listener)
-	return sets.listeners.Size() == 0
+	//fixme: hash of unhashable.
+	pointer := reflect.ValueOf(listener).Pointer()
+	delete(sets.listeners, pointer)
+	return len(sets.listeners) == 0
 }
 
 func newRegistry(pluginConfig registry.PluginConfig) (*ConsulServiceRegistry, error) {

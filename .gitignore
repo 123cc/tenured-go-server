@@ -17,5 +17,8 @@ tcp
 vendor
 get.txt
 *.iml
-.idea
 .DS_Store
+
+/api/*_tcd.go
+/api/client/*_tcd.go
+/api/invoke/*_tcd.go

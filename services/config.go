@@ -10,8 +10,10 @@ import (
 	"github.com/ihaiker/tenured-go-server/commons/remoting"
 	"github.com/ihaiker/tenured-go-server/commons/runtime"
 	"github.com/sirupsen/logrus"
+	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
+	"strconv"
 )
 
 type Registry struct {
@@ -31,20 +33,33 @@ type Tcp struct {
 	Attributes map[string]string `json:"attributes,omitempty" yaml:"attributes,omitempty"`
 }
 
-type Executors map[string]int
+type ExecutorParam struct {
+	Type  string
+	Param []int
+}
 
-func (this *Executors) Get(key string, def int) int {
+type Executors map[string]string
+
+func (this *Executors) Get(key string) (*ExecutorParam, bool) {
 	if val, has := (*this)[key]; has {
-		return val
+		m := regexp.MustCompile(`(fix|single|scheduled)\((\d+),?(\d+)?\)`)
+		gs := m.FindStringSubmatch(val)
+
+		param := make([]int, len(gs[2:]))
+		for i := 0; i < len(gs[2:]); i++ {
+			param[i], _ = strconv.Atoi(gs[2+i])
+		}
+		return &ExecutorParam{Type: gs[1], Param: param}, true
 	}
-	return def
+	return nil, false
 }
 
 type Logs struct {
-	Level   string `json:"level" yaml:"level"`
-	Path    string `json:"path" yaml:"path"`
-	Output  string `json:"Output" yaml:"Output"` //stdout,file
-	Archive bool   `json:"archive" yaml:"archive"`
+	Level   string            `json:"level" yaml:"level"`
+	Path    string            `json:"path" yaml:"path"`
+	Output  string            `json:"output" yaml:"output"` //stdout,file
+	Archive bool              `json:"archive" yaml:"archive"`
+	Loggers map[string]string `json:"loggers" yaml:"loggers"`
 }
 
 func SearchServerConfig(serverName string) []string {
@@ -65,7 +80,7 @@ func SearchServerConfig(serverName string) []string {
 func LoadConfig(path string, config interface{}) error {
 	fs := commons.NewFile(path)
 	if !fs.Exist() || fs.IsDir() {
-		return errors.New("the config not found : " + path)
+		return os.ErrNotExist
 	}
 
 	bs, err := fs.ToBytes()
@@ -92,15 +107,19 @@ func LoadServerConfig(server, configFile string, configObj interface{}) error {
 	if configFile != "" {
 		return LoadConfig(configFile, configObj)
 	} else {
+		logrus.Debug("search config file.")
 		searchConfigs := SearchServerConfig(server)
 		for _, searchConfig := range searchConfigs {
 			if err := LoadConfig(searchConfig, configObj); err == nil {
-				logrus.Info("use config file: ", searchConfig)
+				logrus.Debug("use config file: ", searchConfig)
 				return nil
+			} else if err == os.ErrNotExist {
+				logrus.Debug("the file not found: ", searchConfig)
 			} else {
-				logrus.Debugf("config file %s error: %s", searchConfig, err)
+				return err
 			}
 		}
-		return errors.New("any config found ! \n\t" + strings.Join(searchConfigs, "\n\t"))
+		logrus.Info("use default config.")
+		return nil
 	}
 }

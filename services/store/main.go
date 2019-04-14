@@ -28,32 +28,29 @@ var StoreCmd = &cobra.Command{
 			return err
 		}
 
-		if err = os.Chdir(storeCfg.WorkDir); err != nil {
+		if err = os.Chdir(storeCfg.Data); err != nil {
 			return err
 		}
 
-		if debug, err := cmd.Root().PersistentFlags().GetBool("debug"); err == nil && debug {
-			storeCfg.Logs.Level = "debug"
-		}
-
-		if logger, err = logs.InitLogger(
-			"store",
-			storeCfg.Logs.Output, storeCfg.Logs.Level,
-			storeCfg.Logs.Path, storeCfg.Logs.Archive,
+		if err = logs.InitLogger(
+			storeCfg.Logs.Loggers,
+			storeCfg.Logs.Level, storeCfg.Logs.Output, storeCfg.Logs.Path,
+			storeCfg.Logs.Archive,
 		); err != nil {
 			return err
 		}
+		logger = logs.GetLogger("store")
 		return nil
 	},
-	RunE: func(cmd *cobra.Command, args []string) (err error) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		storeService = newStoreServer(storeCfg)
-		err = storeService.Start()
+		err := storeService.Start()
 		if err == nil {
-			signal.Signal(func() {
-				//do nothing...
-			})
+			signal.Signal(func() {})
+		} else {
+			logger.Error(err.Error())
 		}
-		return
+		return err
 	},
 	PostRun: func(cmd *cobra.Command, args []string) {
 		if storeService != nil {

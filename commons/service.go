@@ -1,6 +1,9 @@
 package commons
 
-import "sync/atomic"
+import (
+	"reflect"
+	"sync/atomic"
+)
 
 const (
 	S_STATUS_INIT       ServerStatus = 0 //服务初始化过程中
@@ -12,9 +15,70 @@ const (
 	S_STATUS_DOWN       ServerStatus = 6 //服务已经停止
 )
 
-type Service interface {
+type ServiceStarter interface {
 	Start() error
+}
+
+type ServiceShutdowner interface {
 	Shutdown(interrupt bool)
+}
+
+type Service interface {
+	ServiceStarter
+	ServiceShutdowner
+}
+
+func StartIfService(obj interface{}) error {
+	if obj == nil || reflect.ValueOf(obj).IsNil() {
+		return nil
+	}
+	if service, match := obj.(Service); match {
+		return service.Start()
+	}
+	return nil
+}
+
+func ShutdownIfService(obj interface{}, interrupt bool) {
+	if obj == nil || reflect.ValueOf(obj).IsNil() {
+		return
+	}
+	if service, match := obj.(Service); match {
+		service.Shutdown(interrupt)
+	}
+}
+
+type ServiceManager struct {
+	services []Service
+}
+
+func (this *ServiceManager) Add(objs ...interface{}) {
+	if objs == nil {
+		return
+	}
+	for _, obj := range objs {
+		if service, match := obj.(Service); match {
+			this.services = append(this.services, service)
+		}
+	}
+}
+
+func (this *ServiceManager) Start() error {
+	for _, v := range this.services {
+		if err := v.Start(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (this *ServiceManager) Shutdown(interrupt bool) {
+	for _, v := range this.services {
+		v.Shutdown(interrupt)
+	}
+}
+
+func NewServiceManager() *ServiceManager {
+	return &ServiceManager{services: make([]Service, 0)}
 }
 
 type ServerStatus uint32

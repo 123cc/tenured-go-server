@@ -29,21 +29,18 @@ var ConsoleCommand = &cobra.Command{
 		if err := services.LoadServerConfig("console", config, consoleConfig); err != nil {
 			return err
 		}
-		if err = os.Chdir(consoleConfig.WorkDir); err != nil {
+		if err = os.Chdir(consoleConfig.Data); err != nil {
 			return err
 		}
 
-		if debug, err := cmd.Root().PersistentFlags().GetBool("debug"); err == nil && debug {
-			consoleConfig.Logs.Level = "debug"
-		}
-
-		logger, err = logs.InitLogger(
-			"console",
-			consoleConfig.Logs.Output,
-			consoleConfig.Logs.Level,
-			consoleConfig.Logs.Path,
+		if err = logs.InitLogger(
+			consoleConfig.Logs.Loggers,
+			consoleConfig.Logs.Level, consoleConfig.Logs.Output, consoleConfig.Logs.Path,
 			consoleConfig.Logs.Archive,
-		)
+		); err != nil {
+			return err
+		}
+		logger = logs.GetLogger("store")
 		return err
 	},
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
